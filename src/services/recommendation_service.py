@@ -11,34 +11,32 @@ def date_to_datetime(d: date) -> datetime:
 async def generate_recommendation(
     city: str,
     user_id: str,
-    temperature: float,
-    humidity: float = None
+    weather_data: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Generate a single recommendation for the given city and weather conditions
-    
-    Args:
-        city: City name
-        user_id: User ID making the request
-        temperature: Current/forecasted temperature
-        humidity: Current/forecasted humidity
-        
-    Returns:
-        Dictionary with recommendation details
+    Generate a single recommendation for the given city using real weather data
     """
+    # Extract weather features
+    avg_temp = weather_data.get("avg_temp", 25.0)
+    max_temp = weather_data.get("max_temp", 29.0)
+    humidity = weather_data.get("humidity", 65.0)
+    rainfall = weather_data.get("rainfall", 0.0)
+    
     # Get ML prediction
     prediction = ml_service.predict_price(
         city=city,
-        temperature=temperature,
-        humidity=humidity
+        temperature=avg_temp,
+        max_temp=max_temp,
+        humidity=humidity,
+        rainfall=rainfall
     )
     
-    # Apply rule-based constraints
+    # Apply rule-based constraints (using average temp)
     start_date = date.today() + timedelta(days=1)  # Start tomorrow by default
-    start_date = apply_temperature_constraints(start_date, temperature)
+    start_date = apply_temperature_constraints(start_date, avg_temp)
     
     # Calculate end date based on optimal rearing duration
-    duration_days = get_optimal_rearing_duration(temperature)
+    duration_days = get_optimal_rearing_duration(avg_temp)
     end_date = calculate_end_date(start_date, duration_days)
     
     # Convert dates to datetime for MongoDB
@@ -50,57 +48,55 @@ async def generate_recommendation(
         "predicted_price": prediction["predicted_price"],
         "confidence_score": prediction.get("confidence_score", 0.0),
         "weather_conditions": {
-            "temperature": temperature,
-            "humidity": humidity
+            "temperature": avg_temp,
+            "max_temp": max_temp,
+            "humidity": humidity,
+            "rainfall": rainfall
         },
         "created_at": datetime.utcnow()
     }
 
 async def generate_10day_predictions(
     city: str,
-    base_temperature: float,
-    humidity: float = None
+    weather_forecasts: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     """
-    Generate predictions for the next 10 days
-    
-    Args:
-        city: City name
-        base_temperature: Current temperature (will vary slightly for each day)
-        humidity: Current humidity
-        
-    Returns:
-        List of predictions for 10 days with best date highlighted
+    Generate predictions for the next 10 days using real weather forecast
     """
     predictions = []
-    start_date = date.today()
     
-    # Generate predictions for next 10 days
-    for day_offset in range(10):
-        prediction_date = start_date + timedelta(days=day_offset)
+    # We only need 10 days, but API might return more
+    forecast_days = weather_forecasts[:10]
+    
+    for day_weather in forecast_days:
+        # Parse date from weather string format "YYYY-MM-DD"
+        prediction_date = datetime.strptime(day_weather["date"], "%Y-%m-%d").date()
         
-        # Simulate slight temperature variation (±2°C)
-        import random
-        temp_variation = random.uniform(-2, 2)
-        day_temperature = base_temperature + temp_variation
+        avg_temp = day_weather.get("avg_temp", 25.0)
+        max_temp = day_weather.get("max_temp", 29.0)
+        humidity = day_weather.get("humidity", 65.0)
+        rainfall = day_weather.get("rainfall", 0.0)
         
         # Get price prediction
         prediction = ml_service.predict_price(
             city=city,
-            temperature=day_temperature,
-            humidity=humidity
+            temperature=avg_temp,
+            max_temp=max_temp,
+            humidity=humidity,
+            rainfall=rainfall,
+            month=prediction_date.month # Pass the specific month of the forecast date
         )
         
         # Calculate rearing duration and end date
-        duration = get_optimal_rearing_duration(day_temperature)
+        duration = get_optimal_rearing_duration(avg_temp)
         end_date = calculate_end_date(prediction_date, duration)
         
         predictions.append({
             "date": prediction_date,
             "predicted_price": prediction["predicted_price"],
             "end_date": end_date,
-            "temperature": day_temperature,
-            "is_best_date": False  # Will be set later
+            "temperature": avg_temp,
+            "is_best_date": False
         })
     
     # Find best date (highest predicted price)

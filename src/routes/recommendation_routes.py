@@ -40,6 +40,8 @@ async def verify_farmer_role(user_id: str = Depends(get_current_user_id)) -> str
         )
     return user_id
 
+from src.services.weather_service import weather_service
+
 @router.post("/predict", response_model=PredictionResponse, status_code=status.HTTP_201_CREATED)
 async def generate_cocoon_recommendation(
     request: PredictionRequest,
@@ -47,31 +49,23 @@ async def generate_cocoon_recommendation(
 ):
     """
     Generate cocoon rearing recommendation based on city and weather
-    
-    - Fetches weather data for the specified city
-    - Generates ML-based price prediction
-    - Applies rule-based constraints
-    - Calculates optimal start and end dates
-    - Saves recommendation to database
     """
     try:
-        # For now, using mock temperature data
-        # TODO: Integrate with weather API or database
-        city_temperatures = {
-            "Bengaluru": 24.0,
-            "Ramanagar": 26.0,
-            "Siddlaghatta": 25.0
-        }
+        # Fetch real weather data
+        weather_data = await weather_service.get_weather_data(request.city)
+        current_weather = weather_data.get("current")
         
-        temperature = city_temperatures.get(request.city, 25.0)
-        humidity = 65.0  # Default humidity
+        if not current_weather:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Could not fetch weather data"
+            )
         
         # Generate recommendation
         recommendation = await generate_recommendation(
             city=request.city,
             user_id=user_id,
-            temperature=temperature,
-            humidity=humidity
+            weather_data=current_weather
         )
         
         # Save to database
@@ -92,7 +86,12 @@ async def generate_cocoon_recommendation(
             created_at=recommendation["created_at"]
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error generating recommendation: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate recommendation: {str(e)}"
@@ -105,10 +104,6 @@ async def get_recommendation_history(
 ):
     """
     Get user's recommendation history
-    
-    - Returns list of past recommendations
-    - Sorted by creation date (newest first)
-    - Limited to specified number of results
     """
     try:
         recommendations_collection = get_recommendations_collection()
@@ -120,7 +115,14 @@ async def get_recommendation_history(
         )
         
         history_items = [
-            RecommendationHistoryItem(**rec)
+            RecommendationHistoryItem(
+                id=rec["id"],
+                city=rec["city"],
+                start_date=datetime_to_date(rec["start_date"]),
+                end_date=datetime_to_date(rec["end_date"]),
+                predicted_price=rec["predicted_price"],
+                created_at=rec["created_at"]
+            )
             for rec in recommendations
         ]
         
@@ -142,26 +144,22 @@ async def get_10day_prediction_graph(
 ):
     """
     Get 10-day prediction graph data for dashboard
-    
-    - Generates predictions for next 10 days
-    - Identifies best start date within the window
-    - Returns data suitable for chart visualization
     """
     try:
-        # Mock temperature data
-        city_temperatures = {
-            "Bengaluru": 24.0,
-            "Ramanagar": 26.0,
-            "Siddlaghatta": 25.0
-        }
+        # Fetch real 10-day weather forecast
+        weather_data = await weather_service.get_weather_data(city, days=12) # Fetch extra days to be safe
+        forecasts = weather_data.get("forecast", [])
         
-        base_temperature = city_temperatures.get(city, 25.0)
+        if not forecasts:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Could not fetch weather forecast"
+            )
         
         # Generate 10-day predictions
         predictions = await generate_10day_predictions(
             city=city,
-            base_temperature=base_temperature,
-            humidity=65.0
+            weather_forecasts=forecasts
         )
         
         # Find best prediction
@@ -184,7 +182,12 @@ async def get_10day_prediction_graph(
             best_predicted_price=best_prediction["predicted_price"]
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error generating 10-day graph: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate 10-day predictions: {str(e)}"
